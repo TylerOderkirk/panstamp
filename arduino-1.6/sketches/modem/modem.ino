@@ -35,6 +35,8 @@
  * Visit our wiki for details about the protocol in case you want to develop
  * your own PC library for this device.
  */
+#define PANSTAMP_AVR 1
+#include "ccpacket.h"
 
 #include "modem.h"
 #ifdef PANSTAMP_NRG
@@ -55,10 +57,15 @@ byte t1Ticks = 0;     // Timer 1 ticks
 #define STOP_TIMER()  TIMER.detachInterrupt()
 #endif
 
+#include <SoftwareSerial.h>
+
+SoftwareSerial softSerial(10, 11); // RX, TX
+CCPACKET fakeRxPacket;
+
 /**
  * LED pin
  */
-#define LEDPIN  4
+#define LEDPIN  13
 
 byte charToHex(byte ch);
 
@@ -91,7 +98,7 @@ void isrT1event(void)
     // Pending "+++" command?
     if (!strcmp(strSerial, AT_GOTO_CMDMODE))
     {
-      panstamp.rxOff();  // Disable wireless reception
+      ///panstamp.rxOff();  // Disable wireless reception
       Serial.println("OK-Command mode");
       serMode = SERMODE_COMMAND;
     }
@@ -121,7 +128,8 @@ void handleSerialCmd(char* command)
   // Data mode?
   if (serMode == SERMODE_DATA)
   {
-    packet.length = strlen(command)/2;
+    // Because data is sent via serial to the modem hex-encoded, it requires half the space. I.e. "41" is sent over the air as "A".
+    packet.length = strlen(command)/2; 
     
     if (packet.length > 0)
     {
@@ -132,7 +140,13 @@ void handleSerialCmd(char* command)
         packet.data[i] |= charToHex(command[i*2 + 1]);
       }
       // Send packet via RF
-      panstamp.radio.sendData(packet);
+      //Serial.print("Sending this many bytes: ");
+      //Serial.println(packet.length, DEC);
+      //softSerial.write(packet.length);
+      softSerial.write(packet.data, packet.length);
+      // Reference: https://github.com/panStamp/panstamp/wiki/panStamp-API#senddata
+      //  First byte is destination addr
+      ///panstamp.radio.sendData(packet);
     }
   }
   // Command mode?
@@ -149,14 +163,14 @@ void handleSerialCmd(char* command)
       else if (!strcmp(strSerial, AT_RESET))
       {
         Serial.println("OK");
-        panstamp.reset();
+        ///panstamp.reset();
       }
       // Go to serial data mode
       else if (!strcmp(strSerial, AT_GOTO_DATAMODE))
       {
         serMode = SERMODE_DATA;
         Serial.println("OK-Data mode");
-        panstamp.rxOn();  // Enable wireless reception
+        ///panstamp.rxOn();  // Enable wireless reception
       }
     }
     // Set new value
@@ -186,11 +200,13 @@ void handleSerialCmd(char* command)
       {
         if (atQuery == ATQUERY_COMMAND)
         {
-          panstamp.radio.setChannel(i);
+          ///panstamp.radio.setChannel(i);
           Serial.println("OK");
         }
-        else
-          Serial.println(panstamp.radio.channel, HEX);
+        else {
+          ///Serial.println(panstamp.radio.channel, HEX);
+          Serial.println("88");
+        }
       }
       // Synchronization word
       else if (!strncmp(strSerial, AT_SYNCWORD, 4))
@@ -203,7 +219,7 @@ void handleSerialCmd(char* command)
             arrV[0] |= charToHex(strSerial[6]);
             arrV[1] = charToHex(strSerial[7]) << 4;
             arrV[1] |= charToHex(strSerial[8]);
-            panstamp.radio.setSyncWord(arrV);
+            ///panstamp.radio.setSyncWord(arrV);
             Serial.println("OK");
           }
           else
@@ -211,7 +227,7 @@ void handleSerialCmd(char* command)
         }
         else
         {
-          Serial.println((unsigned int)panstamp.radio.syncWord[0] << 8 | panstamp.radio.syncWord[1], HEX);
+          ///Serial.println((unsigned int)panstamp.radio.syncWord[0] << 8 | panstamp.radio.syncWord[1], HEX);
         }
       }
       // Device address
@@ -219,11 +235,12 @@ void handleSerialCmd(char* command)
       {
         if (atQuery == ATQUERY_COMMAND)
         {
-          panstamp.radio.setDevAddress(i);
+          ///panstamp.radio.setDevAddress(i);
           Serial.println("OK");
         }
-        else
-          Serial.println(panstamp.radio.devAddress, HEX);
+        else {
+          ///Serial.println(panstamp.radio.devAddress, HEX);
+        }
       }
       // Address check
       else if (!strncmp(strSerial, AT_ADDRCHECK, 4))
@@ -232,12 +249,12 @@ void handleSerialCmd(char* command)
         {
           if (i == 0)
           {
-            panstamp.radio.disableAddressCheck();
+            ///panstamp.radio.disableAddressCheck();
             Serial.println("OK");
           }
           else if (i == 1)
           {
-            panstamp.radio.enableAddressCheck();
+            ///panstamp.radio.enableAddressCheck();
             Serial.println("OK");
           }
           else
@@ -270,14 +287,16 @@ void setup()
   Serial.flush();
   Serial.println("");
   
+  softSerial.begin(4800);
+  
   // Default mode is COMMAND 
   Serial.println("Modem ready!");
 
   // Disable address check from the RF IC
-  panstamp.radio.disableAddressCheck();
+  ///panstamp.radio.disableAddressCheck();
 
   // Declare RF callback function
-  panstamp.attachInterrupt(rfPacketReceived);
+  ///panstamp.attachInterrupt(rfPacketReceived);
   
   // Initialize Timer object
   INIT_TIMER();
@@ -292,18 +311,32 @@ void setup()
  */
 void loop()
 {
+  if( softSerial.peek() != -1 ) {
+    ch = softSerial.read();
+    //Serial.print("Got byte: ");
+    //Serial.println(ch, HEX);
+    fakeRxPacket.length = 1;
+    // RSSI and LQI aren't applicable for our serial connection, so we'll use some placeholder values
+    fakeRxPacket.rssi = 0xBE; 
+    fakeRxPacket.lqi = 0xEF;
+    fakeRxPacket.data[0] = ch;
+    rxPacket = &fakeRxPacket;
+    packetAvailable = true;
+  }
+  
   // Read wireless packet?
   if (packetAvailable)
   {
     digitalWrite(LEDPIN, HIGH);
     // Disable wireless reception
-    panstamp.rxOff();
+    ///panstamp.rxOff();
 
     byte i; 
     packetAvailable = false;
 
     if (serMode == SERMODE_DATA)
     {
+      // Print the RSSI and LQI in hex
       Serial.print("(");
       if (rxPacket->rssi < 0x10)
         Serial.print("0");
@@ -312,28 +345,31 @@ void loop()
         Serial.print("0");
       Serial.print(rxPacket->lqi, HEX);
       Serial.print(")");
+      // Print the packet's payload bytes in hex
       for(i=0 ; i<rxPacket->length ; i++)
       {
         if (rxPacket->data[i] < 0x10)
           Serial.print(0, HEX);    // Leading zero
         Serial.print(rxPacket->data[i], HEX);
       }
-      Serial.println("");
+      // Print a linefeed to ensure each packet is printed on its own line.
+      Serial.println(""); 
     }
 
     // Enable wireless reception
-    panstamp.rxOn();
+    ///panstamp.rxOn();
     digitalWrite(LEDPIN, LOW);
   }
 
-  // Read serial command
+  // Read one byte of a serial command (which is an AT command (w/ terminating CR) if in COMMAND mode or hex-encoded data if in DATA mode)
   if (Serial.available() > 0)
   {
     // Disable wireless reception
-    panstamp.rxOff();
+    ///panstamp.rxOff();
 
     ch = Serial.read();
 
+    // Silently discard data when the buffer size is exceeded.
     if (len >= SERIAL_BUF_LEN-1)
     {
       memset(strSerial, 0, sizeof(strSerial));
@@ -355,7 +391,7 @@ void loop()
     }
 
     // Enable wireless reception
-    panstamp.rxOn();
+    ///panstamp.rxOn();
   }
 }
 
